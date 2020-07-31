@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="shortcut icon" href="data:;base64,iVBORw0KGgo=">
+  <title>WebGPU Demo - step 17 - ComputePipeline</title>
+</head>
+<body>
+  <script type="module">
+    import glslangModule from '../js/vendor/glslang.js';
+
+    (async () => {
+      if (!navigator.gpu) {
+        const div = document.createElement('div');
+        div.innerHTML = '<div>Your browser does not support WebGPU. Go to <a href="https://webgpu.io">webgpu.io</a> for more information.</div>';
+        document.body.appendChild(div);
+        return;
+      }
+
+      // Initialization
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+
+      const glslang = await glslangModule();
+
+      // https://github.com/openglsuperbible/sb7code/blob/master/src/prefixsum/prefixsum.cpp
+      const COMPUTE_SHADER = `#version 450
+        #define WORKGROUP_SIZE 8
+        layout (local_size_x = WORKGROUP_SIZE) in;
+
+        layout(set = 0, binding = 0) readonly buffer InputBuffer {
+          float[] b_input;
+        };
+
+        layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+          float[] b_output;
+        };
+
+        shared float shared_data[WORKGROUP_SIZE * 2];
+
+        void main() {
+          uint id = gl_LocalInvocationID.x;
+          uint rd_id;
+          uint wr_id;
+          uint mask;
+          ivec2 P0 = ivec2(id * 2, gl_WorkGroupID.x);
+          ivec2 P1 = ivec2(id * 2 + 1, gl_WorkGroupID.x);
+
+          const uint steps = 4;
+          uint step = 0;
+
+          shared_data[P0.x] = b_input[P0.x + P0.y * WORKGROUP_SIZE * 2];
+          shared_data[P1.x] = b_input[P1.x + P1.y * WORKGROUP_SIZE * 2];
+
+          barrier();
+
+          for (step = 0; step < steps; step++) {
+            mask = (1 << step) - 1;
+            rd_id = ((id >> step) << (step + 1)) + mask;
+            wr_id = rd_id + 1 + (id & mask);
+
+            shared_data[wr_id] += shared_data[rd_id];
+
+            barrier();
+          }
+
+          b_output[P0.x * WORKGROUP_SIZE * 2 + P0.y] = shared_data[P0.x];
+          b_output[P1.x * WORKGROUP_SIZE * 2 + P1.y] = shared_data[P1.x];
+        }
+      `;
+      const NUM_ELEMENTS = 16;
+      
+      const inputArrayBuffer = new Float32Array(NUM_ELEMENTS * NUM_ELEMENTS);
+      const output1ArrayBuffer = new Float32Array(NUM_ELEMENTS * NUM_ELEMENTS);
+      const output2ArrayBuffer = new Float32Array(NUM_ELEMENTS * NUM_ELEMENTS);
+      const bindGroups = new Array(2);
+
+      function initData() {
+        for (let i = 0; i < NUM_ELEMENTS; i += 1) {
+          for (let j = 0; j < NUM_ELEMENTS; j += 1) {
+            const index = j + i * NUM_ELEMENTS;
+            inputArrayBuffer[index] = Math.floor(Math.random() * 10);
+          }
+        }
+        for (let i = 0; i < NUM_ELEMENTS; i += 1) {
+          let total = 0;
+          for (let j = 0; j < NUM_ELEMENTS; j += 1) {
+            const index = j + i * NUM_ELEMENTS;
+            total += inputArrayBuffer[index];
+            output1ArrayBuffer[index] = total;
+          }
+        }
+        for (let i = 0; i < NUM_ELEMENTS; i += 1) {
+          let total = 0;
+          for (let j = 0; j < NUM_ELEMENTS; j += 1) {
+            const index = j * NUM_ELEMENTS + i;
+            total += output1ArrayBuffer[index];
+            output2ArrayBuffer[index] = total;
+          }
+        }
+      }
+
+      initData();
+
+      const inputBuffer = device.createBuffer({
+        size: 4 * NUM_ELEMENTS * NUM_ELEMENTS,
+        usage: GPUBufferUsage.STORAGE,
+        mappedAtCreation: true,
+      });
+      new Float32Array(inputBuffer.getMappedRange()).set(inputArrayBuffer);
+      inputBuffer.unmap();
+      const output1Buffer = device.createBuffer({
+        size: 4 * NUM_ELEMENTS * NUM_ELEMENTS,
+        usage: GPUBufferUsage.STORAGE,
+      });
+      const output2Buffer = device.createBuffer({
+        size: 4 * NUM_ELEMENTS * NUM_ELEMENTS,
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE,
+      });
+      const debugBuffer = device.createBuffer({
+        size: 4 * NUM_ELEMENTS * NUM_ELEMENTS,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      const pipeline = device.createComputePipeline({
+        computeStage: {
+          module: device.createShaderModule({
+            code: glslang.compileGLSL(COMPUTE_SHADER, 'compute'),
+          }),
+          entryPoint: 'main',
+        },
+      });
+      const bindGroupLayout = pipeline.getBindGroupLayout(0);
+      bindGroups[0] = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: inputBuffer,
+            },
+          },
+          {
+            binding: 1,
+            resource: {
+              buffer: output1Buffer,
+            },
+          },
+        ],
+      });
+      bindGroups[1] = device.createBindGroup({
+        layout: bindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: output1Buffer,
+            },
+          },
+          {
+            binding: 1,
+            resource: {
+              buffer: output2Buffer,
+            },
+          },
+        ],
+      });
+
+      const commandEncoder = device.createCommandEncoder();
+      const passEncoder = commandEncoder.beginComputePass();
+      passEncoder.setPipeline(pipeline);
+      passEncoder.setBindGroup(0, bindGroups[0]);
+      passEncoder.dispatch(NUM_ELEMENTS);
+      passEncoder.setBindGroup(0, bindGroups[1]);
+      passEncoder.dispatch(NUM_ELEMENTS);
+      passEncoder.endPass();
+      commandEncoder.copyBufferToBuffer(output2Buffer, 0, debugBuffer, 0, 4 * NUM_ELEMENTS * NUM_ELEMENTS);
+      device.defaultQueue.submit([commandEncoder.finish()]);
+      (async () => {
+      if (!navigator.gpu) {
+        const div = document.createElement('div');
+        div.innerHTML = '<div>Your browser does not support WebGPU. Go to <a href="https://webgpu.io">webgpu.io</a> for more information.</div>';
+        document.body.insertBefore(div, canvas);
+        return;
+      }
+
+        await debugBuffer.mapAsync(GPUMapMode.READ);
+        const array = new Float32Array(debugBuffer.getMappedRange());
+        const count = array.filter((value, i) => value === output2ArrayBuffer[i]).length;
+        console.log(inputArrayBuffer, array, output2ArrayBuffer);
+        console.log(NUM_ELEMENTS * NUM_ELEMENTS === count);
+        debugBuffer.unmap();
+      })();
+    })();
+  </script>
+</body>
+</html>

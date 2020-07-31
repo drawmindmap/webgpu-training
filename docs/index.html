@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="shortcut icon" href="data:;base64,iVBORw0KGgo=">
+  <title>WebGPU training</title>
+</head>
+<body>
+  <script type="module">
+    import files from './js/files.js';
+
+    const html = files.map((fileName) => {
+      const tutorial = fileName.split('.')[0];
+      return `<a href="training/${fileName}">${tutorial}</a>`;
+    }).join('<br>\n');
+    document.body.innerHTML = html;
+  </script>
+</body>
+</html>

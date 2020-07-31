@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="shortcut icon" href="data:;base64,iVBORw0KGgo=">
+  <title>WebGPU Demo - step 8 - IndexBuffer</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script type="module">
+    import { GUI } from '../js/vendor/dat.gui.js';
+    import glslangModule from '../js/vendor/glslang.js';
+
+    (async () => {
+      if (!navigator.gpu) {
+        const div = document.createElement('div');
+        div.innerHTML = '<div>Your browser does not support WebGPU. Go to <a href="https://webgpu.io">webgpu.io</a> for more information.</div>';
+        document.body.insertBefore(div, canvas);
+        return;
+      }
+
+      // Initialization
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext('gpupresent');
+      const format = await context.getSwapChainPreferredFormat(device);
+      const swapChain = context.configureSwapChain({ device, format });
+
+      const glslang = await glslangModule();
+
+      const vertexShader = `#version 450
+        layout(location = 0) in vec2 a_position;
+        layout(location = 1) in vec3 a_color;
+
+        layout(location = 0) out vec4 v_color;
+
+        void main () {
+          gl_Position = vec4(a_position - 0.5, 0.0, 1.0);
+          v_color = vec4(a_color, 1.0);
+        }
+      `;
+      const fragmentShader = `#version 450
+        layout(set = 0, binding = 0) uniform UniformMaterial {
+          vec4 u_baseColor;
+        };
+
+        layout(location = 0) in vec4 v_color;
+
+        layout(location = 0) out vec4 fragColor;
+
+        void main () {
+          fragColor = u_baseColor * v_color;
+        }
+      `;
+
+      // Create Render Pipeline
+      const sampleCount = 4;
+      const pipeline = device.createRenderPipeline({
+        vertexStage: {
+          module: device.createShaderModule({
+            code: glslang.compileGLSL(vertexShader, 'vertex'),
+          }),
+          entryPoint: 'main',
+        },
+        fragmentStage: {
+          module: device.createShaderModule({
+            code: glslang.compileGLSL(fragmentShader, 'fragment'),
+          }),
+          entryPoint: 'main',
+        },
+        primitiveTopology: 'triangle-list',
+        vertexState: {
+          indexFormat: 'uint16',
+          vertexBuffers: [
+            {
+              arrayStride: 4 * (2 + 3),
+              attributes: [
+                {
+                  format: 'float2',
+                  offset: 0,
+                  shaderLocation: 0,
+                },
+                {
+                  format: 'float3',
+                  offset: 4 * 2,
+                  shaderLocation: 1,
+                },
+              ],
+            },
+          ],
+        },
+        colorStates: [{ format }],
+        sampleCount,
+      });
+
+      const passDescriptor = {
+        colorAttachments: [{
+          attachment: undefined,
+          loadValue: [0, 0, 0, 1],
+        }],
+      };
+
+      // Create Output Texture
+      let outputTexture;
+      let outputTextureView;
+      function createOutputTexture() {
+        if (outputTexture) {
+          outputTexture.destroy();
+        }
+        outputTexture = device.createTexture({
+          size: {
+            width: canvas.width,
+            height: canvas.height,
+            depth: 1,
+          },
+          sampleCount,
+          format,
+          usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+        });
+        outputTextureView = outputTexture.createView();
+      }
+
+      function resize() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const { devicePixelRatio } = window;
+        canvas.width = width * devicePixelRatio;
+        canvas.height = height * devicePixelRatio;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+
+        createOutputTexture();
+      }
+
+      window.onresize = resize;
+      resize();
+
+      // Change background color
+      const gui = new GUI();
+      const config = {
+        backgroundColor: [0, 0, 0],
+        baseColor: [255, 255, 255],
+      };
+      gui.addColor(config, 'backgroundColor').onChange((value) => {
+        passDescriptor.colorAttachments[0].loadValue[0] = value[0] / 255;
+        passDescriptor.colorAttachments[0].loadValue[1] = value[1] / 255;
+        passDescriptor.colorAttachments[0].loadValue[2] = value[2] / 255;
+      });
+
+      // Create Material Buffer
+      const materialBuffer = device.createBuffer({
+        size: 4 * 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      const materialArrayBuffer = new Float32Array([1, 1, 1, 1]);
+      // Create Bind Group
+      const materialBindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: materialBuffer,
+            },
+          },
+        ],
+      });
+      gui.addColor(config, 'baseColor').onChange((value) => {
+        materialArrayBuffer[0] = value[0] / 255;
+        materialArrayBuffer[1] = value[1] / 255;
+        materialArrayBuffer[2] = value[2] / 255;
+        materialArrayBuffer[3] = 1;
+      });
+
+      // Create Vertex Buffer
+      const vertexBuffer = device.createBuffer({
+        size: 4 * (2 + 3) * 4,
+        usage: GPUBufferUsage.VERTEX,
+        mappedAtCreation: true,
+      });
+      const vertexArrayBuffer = vertexBuffer.getMappedRange();
+      new Float32Array(vertexArrayBuffer).set([
+        0, 0,  1, 0, 0,
+        1, 0,  0, 1, 0,
+        0, 1,  0, 0, 1,
+        1, 1,  1, 1, 1,
+      ]);
+      vertexBuffer.unmap();
+      // Create Index Buffer
+      const indexBuffer = device.createBuffer({
+        size: 2 * 6,
+        usage: GPUBufferUsage.INDEX,
+        mappedAtCreation: true,
+      });
+      const indexArrayBuffer = indexBuffer.getMappedRange();
+      new Uint16Array(indexArrayBuffer).set([
+        0, 1, 2,
+        1, 3, 2,
+      ]);
+      indexBuffer.unmap();
+
+      function update() {
+        // Update Material Buffer
+        device.defaultQueue.writeBuffer(materialBuffer, 0, materialArrayBuffer);
+      }
+
+      function draw(commandEncoder) {
+        const passEncoder = commandEncoder.beginRenderPass(passDescriptor);
+        passEncoder.setPipeline(pipeline);
+        passEncoder.setBindGroup(0, materialBindGroup);
+        passEncoder.setVertexBuffer(0, vertexBuffer);
+        passEncoder.setIndexBuffer(indexBuffer);
+        passEncoder.drawIndexed(6);
+        passEncoder.endPass();
+      }
+
+      function render() {
+        const textureView = swapChain.getCurrentTexture().createView();
+        passDescriptor.colorAttachments[0].attachment = outputTextureView;
+        passDescriptor.colorAttachments[0].resolveTarget = textureView;
+        const commandEncoder = device.createCommandEncoder();
+        update();
+        draw(commandEncoder);
+        device.defaultQueue.submit([commandEncoder.finish()]);
+        requestAnimationFrame(render);
+      }
+
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>

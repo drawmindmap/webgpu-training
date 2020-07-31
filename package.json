@@ -1,0 +1,18 @@
+{
+  "name": "webgpu-training",
+  "version": "1.0.0",
+  "description": "WebGPU training",
+  "main": "index.js",
+  "scripts": {
+    "start": "serve docs",
+    "training": "node ./tools/training.js"
+  },
+  "keywords": [
+    "webgpu"
+  ],
+  "author": "drawmindmap",
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^11.3.2"
+  }
+}

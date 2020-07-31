@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="shortcut icon" href="data:;base64,iVBORw0KGgo=">
+  <title>WebGPU Demo - step 15 - Bundle</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script type="module">
+    import { mat4, vec3, vec4, quat } from '../js/vendor/gl-matrix.js';
+    import Camera from '../js/Camera.js';
+    import { GUI } from '../js/vendor/dat.gui.js';
+    import glslangModule from '../js/vendor/glslang.js';
+
+    (async () => {
+      if (!navigator.gpu) {
+        const div = document.createElement('div');
+        div.innerHTML = '<div>Your browser does not support WebGPU. Go to <a href="https://webgpu.io">webgpu.io</a> for more information.</div>';
+        document.body.insertBefore(div, canvas);
+        return;
+      }
+
+      // Initialization
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const context = canvas.getContext('gpupresent');
+      const format = await context.getSwapChainPreferredFormat(device);
+      const swapChain = context.configureSwapChain({ device, format });
+
+      // Create Camera Controller
+      const camera = new Camera();
+      camera.attach(canvas);
+
+      const glslang = await glslangModule();
+
+      const vertexShader = `
+        layout(set = 0, binding = 0) uniform UniformScene {
+          mat4 u_viewMatrix;
+          mat4 u_projectionMatrix;
+        };
+
+        layout(set = 2, binding = 0) uniform UniformModel {
+          mat4 u_modelMatrix;
+        };
+
+        layout(location = 0) in vec3 a_position;
+        layout(location = 1) in vec3 a_normal;
+        layout(location = 2) in vec2 a_uv;
+
+        layout(location = 0) out vec3 v_normal;
+        layout(location = 1) out vec2 v_uv;
+
+        void main () {
+          gl_Position = u_projectionMatrix * u_viewMatrix * u_modelMatrix * vec4(a_position, 1.0);
+          v_normal = a_normal;
+          v_uv = a_uv;
+        }
+      `;
+      const fragmentShader = `
+        layout(set = 1, binding = 0) uniform UniformMaterial {
+          vec4 u_baseColor;
+        };
+
+        #ifdef DIFFUSE_TEXTURE
+          layout(set = 1, binding = 1) uniform sampler u_diffuseSampler;
+          layout(set = 1, binding = 2) uniform texture2D u_diffuseTexture;
+        #endif
+
+        layout(location = 0) in vec3 v_normal;
+        layout(location = 1) in vec2 v_uv;
+
+        layout(location = 0) out vec4 fragColor;
+
+        void main () {
+          fragColor = u_baseColor;
+          #ifdef DIFFUSE_TEXTURE
+            vec4 diffuseTextureColor = texture(sampler2D(u_diffuseTexture, u_diffuseSampler), v_uv);
+            fragColor *= diffuseTextureColor;
+          #endif
+        }
+      `;
+
+      // Create Render Pipeline
+      const sampleCount = 4;
+      function createPipeline(defines = []) {
+        function getShaderWithDefines(shaderSource) {
+          const defineStr = defines.map((define) => `#define ${define}`).join('\n');
+          return `#version 450\n${defineStr}\n${shaderSource}`;
+        }
+        return device.createRenderPipeline({
+          vertexStage: {
+            module: device.createShaderModule({
+              code: glslang.compileGLSL(getShaderWithDefines(vertexShader), 'vertex'),
+            }),
+            entryPoint: 'main',
+          },
+          fragmentStage: {
+            module: device.createShaderModule({
+              code: glslang.compileGLSL(getShaderWithDefines(fragmentShader), 'fragment'),
+            }),
+            entryPoint: 'main',
+          },
+          primitiveTopology: 'triangle-list',
+          vertexState: {
+            indexFormat: 'uint16',
+            vertexBuffers: [
+              {
+                arrayStride: 4 * (3 + 3 + 2),
+                attributes: [
+                  {
+                    format: 'float3',
+                    offset: 0,
+                    shaderLocation: 0,
+                  },
+                  {
+                    format: 'float3',
+                    offset: 4 * 3,
+                    shaderLocation: 1,
+                  },
+                  {
+                    format: 'float2',
+                    offset: 4 * (3 + 3),
+                    shaderLocation: 2,
+                  },
+                ],
+              },
+            ],
+          },
+          colorStates: [{ format }],
+          depthStencilState: {
+            format: 'depth24plus-stencil8',
+            depthWriteEnabled: true,
+            depthCompare: 'less-equal',
+          },
+          sampleCount,
+        });
+      }
+      const pipelineWithTexture = createPipeline(['DIFFUSE_TEXTURE']);
+      const pipelineWithoutTexture = createPipeline();
+
+      const passDescriptor = {
+        colorAttachments: [{
+          attachment: undefined,
+          loadValue: [0, 0, 0, 1],
+        }],
+        depthStencilAttachment: {
+          attachment: undefined,
+          depthLoadValue: 1,
+          depthStoreOp: 'store',
+          stencilLoadValue: 0,
+          stencilStoreOp: 'store',
+        },
+      };
+
+      // Create Output Texture
+      let outputTexture;
+      let outputTextureView;
+      function createOutputTexture() {
+        if (outputTexture) {
+          outputTexture.destroy();
+        }
+        outputTexture = device.createTexture({
+          size: {
+            width: canvas.width,
+            height: canvas.height,
+            depth: 1,
+          },
+          sampleCount,
+          format,
+          usage: GPUTextureUsage.OUTPUT_ATTACHMENT,
+        });
+        outputTextureView = outputTexture.createView();
+      }
+
+      // Create Depth Texture
+      let depthTexture;
+      function createDepthTexture() {
+        if (depthTexture) {
+          depthTexture.destroy();
+        }
+        depthTexture = device.createTexture({
+          size: {
+            width: canvas.width,
+            height: canvas.height,
+            depth: 1,
+          },
+          sampleCount,
+          format: 'depth24plus-stencil8',
+          usage: GPUTextureUsage.OUTPUT_ATTACHMENT
+        });
+        passDescriptor.depthStencilAttachment.attachment = depthTexture.createView();
+      }
+
+      function resize() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const { devicePixelRatio } = window;
+        canvas.width = width * devicePixelRatio;
+        canvas.height = height * devicePixelRatio;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+
+        createOutputTexture();
+        createDepthTexture();
+      }
+
+      window.onresize = resize;
+      resize();
+
+      // Change background color
+      const gui = new GUI();
+      const config = {
+        backgroundColor: [0, 0, 0],
+        baseColor: [255, 255, 255],
+      };
+      gui.addColor(config, 'backgroundColor').onChange((value) => {
+        passDescriptor.colorAttachments[0].loadValue[0] = value[0] / 255;
+        passDescriptor.colorAttachments[0].loadValue[1] = value[1] / 255;
+        passDescriptor.colorAttachments[0].loadValue[2] = value[2] / 255;
+      });
+
+      // Create Image Texture
+      const image = new Image();
+      image.src = '../asset/images/uv-grid.jpg';
+      await image.decode();
+      const imageBitmap = await createImageBitmap(image);
+      const imageSize = {
+        width: imageBitmap.width,
+        height: imageBitmap.height,
+        depth: 1,
+      };
+      const imageTexture = device.createTexture({
+        size: imageSize,
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.SAMPLED,
+      });
+      device.defaultQueue.copyImageBitmapToTexture(
+        {
+          imageBitmap,
+        },
+        {
+          texture: imageTexture,
+        },
+        imageSize,
+      );
+      
+      // Create Scene Buffer
+      const sceneBuffer = device.createBuffer({
+        size: 4 * (16 + 16),
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+
+      // Create Vertex Buffer
+      function createGeometryBuffer(vertexArray, indexArray) {
+        const vertexBuffer = device.createBuffer({
+          size: 4 * (3 + 3 + 2) * 4,
+          usage: GPUBufferUsage.VERTEX,
+          mappedAtCreation: true,
+        });
+        const vertexArrayBuffer = vertexBuffer.getMappedRange();
+        new Float32Array(vertexArrayBuffer).set(vertexArray);
+        vertexBuffer.unmap();
+        // Create Index Buffer
+        const indexBuffer = device.createBuffer({
+          size: 2 * 6,
+          usage: GPUBufferUsage.INDEX,
+          mappedAtCreation: true,
+        });
+        const indexArrayBuffer = indexBuffer.getMappedRange();
+        new Uint16Array(indexArrayBuffer).set(indexArray);
+        indexBuffer.unmap();
+        return {
+          vertexBuffer,
+          indexBuffer,
+          count: indexArray.length,
+        };
+      }
+      const planeBuffers = createGeometryBuffer(
+        [
+          -1, -1, 0,  0, 0, 1,  0, 1,
+           1, -1, 0,  0, 0, 1,  1, 1,
+          -1,  1, 0,  0, 0, 1,  0, 0,
+           1,  1, 0,  0, 0, 1,  1, 0,
+        ],
+        [
+          0, 1, 2,
+          1, 3, 2,
+        ],
+      );
+      const triangleBuffers = createGeometryBuffer(
+        [
+          -1, -1, 0,  0, 0, 1,  0.0, 1.0,
+           1, -1, 0,  0, 0, 1,  1.0, 1.0,
+           0,  1, 0,  0, 0, 1,  0.5, 0.0,
+        ],
+        [
+          0, 1, 2,
+        ],
+      );
+
+      // Create Objects
+      const objects = [
+        {
+          rotation: quat.create(),
+          translation: vec3.fromValues(-0.5, 0, -.5),
+          scale: vec3.fromValues(0.3, 0.3, 0.3),
+          diffuseColor: vec4.fromValues(1, 0, 0, 1),
+          buffers: planeBuffers,
+          pipeline: pipelineWithTexture,
+          withTexture: true,
+        },
+        {
+          rotation: quat.create(),
+          translation: vec3.fromValues(-0.5, 0, .5),
+          scale: vec3.fromValues(0.3, 0.3, 0.3),
+          diffuseColor: vec4.fromValues(0, 1, 0, 1),
+          buffers: triangleBuffers,
+          pipeline: pipelineWithoutTexture,
+        },
+        {
+          rotation: quat.create(),
+          translation: vec3.fromValues(0.5, 0, 0.5),
+          scale: vec3.fromValues(0.3, 0.3, 0.3),
+          diffuseColor: vec4.fromValues(0, 0, 1, 1),
+          buffers: triangleBuffers,
+          pipeline: pipelineWithoutTexture,
+        },
+        {
+          rotation: quat.create(),
+          translation: vec3.fromValues(0.5, 0, -0.5),
+          scale: vec3.fromValues(0.3, 0.3, 0.3),
+          diffuseColor: vec4.fromValues(1, 1, 1, 1),
+          buffers: planeBuffers,
+          pipeline: pipelineWithTexture,
+          withTexture: true,
+        },
+      ];
+      objects.forEach((object) => {
+        object.modelMatrix = mat4.fromRotationTranslationScale(mat4.create(), object.rotation, object.translation, object.scale);
+        object.modelBuffer = device.createBuffer({
+          size: 4 * 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true,
+        });
+        new Float32Array(object.modelBuffer.getMappedRange()).set(object.modelMatrix);
+        object.modelBuffer.unmap();
+        // Create Model Buffer Bind Group
+        object.modelBindGroup = device.createBindGroup({
+          layout: object.pipeline.getBindGroupLayout(2),
+          entries: [
+            {
+              binding: 0,
+              resource: {
+                buffer: object.modelBuffer,
+              },
+            },
+          ],
+        });
+
+        // Create Scene Buffer Bind Group
+        object.sceneBindGroup = device.createBindGroup({
+          layout: object.pipeline.getBindGroupLayout(0),
+          entries: [
+            {
+              binding: 0,
+              resource: {
+                buffer: sceneBuffer,
+              },
+            },
+          ],
+        });
+        
+        // Create Material Buffer
+        const materialBuffer = device.createBuffer({
+          size: 4 * 4,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          mappedAtCreation: true,
+        });
+        new Float32Array(materialBuffer.getMappedRange()).set(object.diffuseColor);
+        materialBuffer.unmap();
+        // Create Material Bind Group
+        if (object.withTexture) {
+          object.materialBindGroup = device.createBindGroup({
+            layout: object.pipeline.getBindGroupLayout(1),
+            entries: [
+              {
+                binding: 0,
+                resource: {
+                  buffer: materialBuffer,
+                },
+              },
+              {
+                binding: 1,
+                resource: device.createSampler(),
+              },
+              {
+                binding: 2,
+                resource: imageTexture.createView(),
+              },
+            ],
+          });
+        } else {
+          object.materialBindGroup = device.createBindGroup({
+            layout: object.pipeline.getBindGroupLayout(1),
+            entries: [
+              {
+                binding: 0,
+                resource: {
+                  buffer: materialBuffer,
+                },
+              },
+            ],
+          });
+        }
+      });
+
+      // Create Render Bundle
+      const renderBundleEncoder = device.createRenderBundleEncoder({
+        colorFormats: [format],
+        depthStencilFormat: 'depth24plus-stencil8',
+        sampleCount,
+      });
+      objects.forEach((object) => {
+        renderBundleEncoder.setPipeline(object.pipeline);
+        renderBundleEncoder.setBindGroup(0, object.sceneBindGroup);
+        renderBundleEncoder.setBindGroup(1, object.materialBindGroup);
+        renderBundleEncoder.setVertexBuffer(0, object.buffers.vertexBuffer);
+        renderBundleEncoder.setIndexBuffer(object.buffers.indexBuffer);
+        renderBundleEncoder.setBindGroup(2, object.modelBindGroup);
+        renderBundleEncoder.drawIndexed(object.buffers.count);
+      });
+      const renderBundle = renderBundleEncoder.finish();
+
+      function update() {
+        // Update Scene Buffer
+        device.defaultQueue.writeBuffer(sceneBuffer, 0, camera.getViewMatrix());
+        device.defaultQueue.writeBuffer(sceneBuffer, 4 * 16, camera.getProjectionMatrix());
+      }
+
+      function draw(commandEncoder) {
+        const passEncoder = commandEncoder.beginRenderPass(passDescriptor);
+        passEncoder.executeBundles([renderBundle]);
+        passEncoder.endPass();
+      }
+
+      function render() {
+        const textureView = swapChain.getCurrentTexture().createView();
+        passDescriptor.colorAttachments[0].attachment = outputTextureView;
+        passDescriptor.colorAttachments[0].resolveTarget = textureView;
+        const commandEncoder = device.createCommandEncoder();
+        update();
+        draw(commandEncoder);
+        device.defaultQueue.submit([commandEncoder.finish()]);
+        requestAnimationFrame(render);
+      }
+
+      requestAnimationFrame(render);
+    })();
+  </script>
+</body>
+</html>
