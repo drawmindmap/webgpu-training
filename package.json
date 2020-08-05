@@ -4,7 +4,7 @@
   "description": "WebGPU training",
   "main": "index.js",
   "scripts": {
-    "start": "serve docs",
+    "start": "serve -l tcp://127.0.0.1:5001 docs",
     "training": "node ./tools/training.js"
   },
   "keywords": [

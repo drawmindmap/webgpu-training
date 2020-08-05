@@ -177,13 +177,6 @@
       commandEncoder.copyBufferToBuffer(output2Buffer, 0, debugBuffer, 0, 4 * NUM_ELEMENTS * NUM_ELEMENTS);
       device.defaultQueue.submit([commandEncoder.finish()]);
       (async () => {
-      if (!navigator.gpu) {
-        const div = document.createElement('div');
-        div.innerHTML = '<div>Your browser does not support WebGPU. Go to <a href="https://webgpu.io">webgpu.io</a> for more information.</div>';
-        document.body.insertBefore(div, canvas);
-        return;
-      }
-
         await debugBuffer.mapAsync(GPUMapMode.READ);
         const array = new Float32Array(debugBuffer.getMappedRange());
         const count = array.filter((value, i) => value === output2ArrayBuffer[i]).length;
