@@ -16,14 +16,15 @@
 ### 15-Bundle
 ### 16-Instance
 ### 17-ComputePipeline
+### 18-Mipmap
 
 ## TODO
+### alphaToCoverage
 ### GPUShaderModule#compilationInfo
 ### GPUBindGroupLayoutEntry.minBufferBindingSize
 ### GPUQuerySet
 ### GPUFence
 ### DebugMarkers
-### MIPMAP
 ### CompressedTexture
 ### CubeMap
 ### Picking

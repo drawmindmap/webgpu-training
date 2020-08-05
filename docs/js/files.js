@@ -16,4 +16,5 @@ export default [
   '15-Bundle.html',
   '16-Instance.html',
   '17-ComputePipeline.html',
+  '18-Mipmap.html',
 ];
