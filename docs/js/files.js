@@ -17,4 +17,5 @@ export default [
   '16-Instance.html',
   '17-ComputePipeline.html',
   '18-Mipmap.html',
+  '19-Texture-compression-bc.html',
 ];

@@ -17,6 +17,7 @@
 ### 16-Instance
 ### 17-ComputePipeline
 ### 18-Mipmap
+### 19-Texture-compression-bc
 
 ## TODO
 ### alphaToCoverage
@@ -25,7 +26,6 @@
 ### GPUQuerySet
 ### GPUFence
 ### DebugMarkers
-### CompressedTexture
 ### CubeMap
 ### Picking
 ### DynamicBindGroup
