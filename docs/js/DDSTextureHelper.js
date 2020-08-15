@@ -147,7 +147,6 @@ export default function createBCTexture(device, arrayBuffer, isSRGB) {
     usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.SAMPLED,
   });
   // TODO: reuse buffers?
-  // TODO: different width, height: 1024 * 512, 512 * 1024
   const tempBuffers = new Array(levelCount);
   const commandEncoder = device.createCommandEncoder();
   for (let level = 0; level < levelCount; level += 1) {
@@ -156,12 +155,13 @@ export default function createBCTexture(device, arrayBuffer, isSRGB) {
     let bytesPerRow = 4 * ddsLevel.width;
     let ddsLevelData = ddsLevel.data;
     if (bytesPerRow < 256) {
+      const blockCount = ddsLevelData.byteLength === 16 ? 1 : Math.ceil(ddsLevelData.byteLength / bytesPerRow);
+      const blockLength = 16 * Math.ceil(ddsLevel.width / 4);
       bytesPerRow = 256;
-      const blockCount = Math.ceil(ddsLevel.width / 4);
       const newLength = bytesPerRow * blockCount;
       const ddsLevelDataPadding = new Uint8Array(newLength);
       for (let i = 0; i < blockCount; i += 1) {
-        ddsLevelDataPadding.set(new Uint8Array(ddsLevelData.buffer, ddsLevelData.byteOffset + blockCount * 16 * i, blockCount * 16), bytesPerRow * i);
+        ddsLevelDataPadding.set(new Uint8Array(ddsLevelData.buffer, ddsLevelData.byteOffset + blockLength * i, blockLength), bytesPerRow * i);
       }
       ddsLevelData = ddsLevelDataPadding;
     }
