@@ -17,7 +17,6 @@
   <canvas id="canvas"></canvas>
   <script type="module">
     import { GUI } from '../js/vendor/dat.gui.js';
-    import glslangModule from '../js/vendor/glslang.js';
 
     (async () => {
       if (!navigator.gpu) {
@@ -34,30 +33,31 @@
       const format = await context.getSwapChainPreferredFormat(device);
       const swapChain = context.configureSwapChain({ device, format });
 
-      const glslang = await glslangModule();
+      const vertexShader = `
+        entry_point vertex = vtx_main;
+        [[location 0]] var<in> a_position : vec2<f32>;
+        [[location 1]] var<in> a_color : vec3<f32>;
+        [[builtin position]] var<out> gl_Position : vec4<f32>;
+        [[location 0]] var<out> v_color : vec4<f32>;
 
-      const vertexShader = `#version 450
-        layout(location = 0) in vec2 a_position;
-        layout(location = 1) in vec3 a_color;
-
-        layout(location = 0) out vec4 v_color;
-
-        void main () {
-          gl_Position = vec4(a_position - 0.5, 0.0, 1.0);
-          v_color = vec4(a_color, 1.0);
+        fn vtx_main() -> void {
+          gl_Position = vec4<f32>(a_position - 0.5, 0.0, 1.0);
+          v_color = vec4<f32>(a_color, 1.0);
+          return;
         }
       `;
-      const fragmentShader = `#version 450
-        layout(set = 0, binding = 0) uniform UniformMaterial {
-          vec4 u_baseColor;
+      const fragmentShader = `
+        entry_point fragment = frag_main;
+        type Material = [[block]] struct {
+          [[offset 0]] baseColor: vec4<f32>;
         };
+        [[set 0, binding 0]] var<uniform> u_material : Material;
+        [[location 0]] var<in> v_color : vec4<f32>;
+        [[location 0]] var<out> gl_FragColor : vec4<f32>;
 
-        layout(location = 0) in vec4 v_color;
-
-        layout(location = 0) out vec4 fragColor;
-
-        void main () {
-          fragColor = u_baseColor * v_color;
+        fn frag_main() -> void {
+          gl_FragColor = u_material.baseColor * v_color;
+          return;
         }
       `;
 
@@ -66,13 +66,13 @@
       const pipeline = device.createRenderPipeline({
         vertexStage: {
           module: device.createShaderModule({
-            code: glslang.compileGLSL(vertexShader, 'vertex'),
+            code: vertexShader,
           }),
           entryPoint: 'main',
         },
         fragmentStage: {
           module: device.createShaderModule({
-            code: glslang.compileGLSL(fragmentShader, 'fragment'),
+            code: fragmentShader,
           }),
           entryPoint: 'main',
         },
